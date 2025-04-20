@@ -1,0 +1,433 @@
+
+Run the block and you'll have:
+- customer_totals_simple: customer yearly volumes, separated by the year (2 rows per customer)
+- customer_totals_yearly: customer yearly volumnes with more columns, separated by the year (2 rows by customer)
+- customer_totals_wide: 1 row per customer. Should be best for modeling 
+
+Each dataframe has a target variable red_truck_flag 1/0 (1 if 400 gallons or more for the year, 0 if less than 400 gals)
+
+Run the block and you'll have:
+- customer_totals_simple: customer yearly volumes, separated by the year (2 rows per customer)
+- customer_totals_yearly: customer yearly volumnes with more columns, separated by the year (2 rows by customer)
+- customer_totals_wide: 1 row per customer. Should be best for modeling 
+
+Each dataframe has a target variable red_truck_flag 1/0 (1 if 400 gallons or more for the year, 0 if less than 400 gals)
+
+## Main Data set
+```{r}
+library(tidyverse)
+library(caret)
+library(factoextra)
+library(cluster)
+library(NbClust)
+library(ggplot2)
+library(dendextend)
+library(FactoMineR)
+library(pROC)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(skimr)
+library(janitor)
+library(lubridate)
+```
+
+``` {r, warning = FALSE, message = FALSE}
+
+address_mapping <- read_csv("customer_address_and_zip_mapping.csv")
+customer_profile <- read_csv("customer_profile.csv")
+delivery_costs <- read_excel("delivery_cost_data.xlsx")
+transactions <- read_csv("transactional_data.csv")
+
+customer_totals_wide_nidal <-read_csv("customer_totals_wide_joonas.csv")
+
+```
+
+
+## 3. Data Preparation
+```{r}
+# Fill missing values for categorical columns with "Unknown"
+customer_totals_wides_nidal <- customer_totals_wide_nidal %>%
+  mutate(volume_bucket = ifelse(is.na(volume_bucket), "Unknown", volume_bucket),
+         volume_bucket_previous = ifelse(is.na(volume_bucket_previous), "Unknown", volume_bucket_previous))
+
+# Fill missing red_truck_flag with 0 (assumes missing means below threshold)
+customer_totals_wide_nidal <- customer_totals_wide_nidal %>%
+  mutate(red_truck_flag = ifelse(is.na(red_truck_flag), 0, red_truck_flag),
+         red_truck_flag_previous = ifelse(is.na(red_truck_flag_previous), 0, red_truck_flag_previous))
+
+# Fill missing previous year values with 0 (assumes no orders in 2023)
+cols_to_fill <- grep("_previous$", colnames(customer_totals_wide_nidal), value = TRUE)
+customer_totals_wide_nidal[cols_to_fill] <- lapply(customer_totals_wide_nidal[cols_to_fill], function(x) ifelse(is.na(x), 0, x))
+
+# Fill missing YoY changes with 0 (assumes no change if missing previous data)
+customer_totals_wide_nidal <- customer_totals_wide_nidal %>%
+  mutate(across(starts_with("yoy_"), ~ifelse(is.na(.), 0, .)))
+
+# Check if missing values are fixed
+colSums(is.na(customer_totals_wide_nidal))
+
+```
+
+
+
+```{r}
+# Ensure all numeric variables are properly selected
+numeric_cols <- sapply(customer_totals_wide_nidal, is.numeric)
+customer_scaled <- customer_totals_wide_nidal[, numeric_cols]
+
+# Replace infinite values with NA (Only Needs to be Done Once)
+customer_scaled[is.infinite(as.matrix(customer_scaled))] <- NA
+
+# Impute missing values with the median (Handles NA and -Inf)
+customer_scaled <- customer_scaled %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+# Normalize Data (Center & Scale)
+preprocess_params <- preProcess(customer_scaled, method = c("center", "scale"))
+customer_scaled <- predict(preprocess_params, customer_scaled)
+
+# Final Check for NA values
+colSums(is.na(customer_scaled))
+# Convert customer_scaled to a proper dataframe if it's still a list
+customer_scaled <- as.data.frame(customer_scaled)
+
+# Ensure all columns are numeric
+numeric_cols <- sapply(customer_scaled, is.numeric)
+
+# Remove non-numeric columns
+customer_scaled <- customer_scaled[, numeric_cols]
+
+
+```
+
+```{r}
+# Replace Inf or NaN with NA
+customer_scaled$yoy_ordered_cases[is.infinite(customer_scaled$yoy_ordered_cases)] <- NA
+customer_scaled$yoy_ordered_gallons[is.infinite(customer_scaled$yoy_ordered_gallons)] <- NA
+customer_scaled$yoy_total_gallons_ordered[is.infinite(customer_scaled$yoy_total_gallons_ordered)] <- NA
+
+# Replace remaining NAs with 0 (or use median if you prefer)
+customer_scaled$yoy_ordered_cases[is.na(customer_scaled$yoy_ordered_cases)] <- 0
+customer_scaled$yoy_ordered_gallons[is.na(customer_scaled$yoy_ordered_gallons)] <- 0
+customer_scaled$yoy_total_gallons_ordered[is.na(customer_scaled$yoy_total_gallons_ordered)] <- 0
+
+```
+
+
+
+
+## PCA Modeling
+
+```{r}
+library(FactoMineR)
+library(factoextra)
+
+# Run PCA on the numerical columns only
+pca_result <- PCA(customer_scaled, graph = FALSE)
+
+# Scree plot to check variance explained by components
+fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 50))
+
+```
+```{r}
+# Visualize first two principal components (Customers)
+fviz_pca_ind(pca_result, 
+             geom = "point", 
+             col.ind = "cos2", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+
+```
+
+
+
+
+```{r}
+# Visualize variable contributions
+fviz_pca_var(pca_result, 
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+
+```
+
+**1. Scree Plot Analysis**
+The first two principal components (PC1 and PC2) explain 17.5% and 16.4% of the variance, respectively.
+The first four principal components explain a significant proportion of variance (~53.1%), suggesting that reducing dimensionality to 4-5 components might retain a good amount of information.
+
+**2. Individuals PCA Plot**
+The color gradient (cos2 values) shows how well individual customers are represented on PC1 and PC2.
+It looks like a majority of the data points are clustered close to the center, but there are some outliers spread far away.
+This suggests potential clusters in the data, which makes clustering methods (like k-means or hierarchical clustering) a good next step.
+
+**3. Variables PCA Plot**
+Variables like total_gallons_ordered, total_orders, and previous year values seem to contribute strongly to PC1.
+Average cost per gallon and cost-related variables contribute more to PC2.
+Variables that are closer together are highly correlated.
+The high-density region suggests redundancy among some variables, meaning we could remove some without losing too much information.
+
+
+
+##  Compute Within-Cluster Sum of Squares (WCSS) for Elbow Method
+```{r}
+library(factoextra)
+
+# Compute within-cluster sum of squares (WCSS) for different k values
+set.seed(123)  # Ensuring reproducibility
+wcss <- sapply(1:10, function(k) {
+  kmeans_result <- kmeans(pca_result$ind$coord[, 1:4], centers = k, nstart = 25)
+  kmeans_result$tot.withinss
+})
+
+# Print WCSS values
+wcss
+
+```
+
+
+
+
+```{r}
+library(cluster)
+
+sil_scores <- sapply(2:10, function(k) {
+  kmeans_result <- kmeans(pca_result$ind$coord[, 1:4], centers = k, nstart = 25)
+  silhouette_score <- silhouette(kmeans_result$cluster, dist(pca_result$ind$coord[, 1:4]))
+  mean(silhouette_score[, 3])  # Extract average silhouette width
+})
+
+# Print silhouette scores
+sil_scores
+
+```
+
+The Elbow Method (WCSS values) shows a sharp decrease initially and then a slower decline, suggesting a good number of clusters around 3-5.
+The Silhouette Scores indicate how well clusters are defined. The highest values are for k = 2 and k = 3 (0.3281 and 0.3218), meaning that clustering is most distinct at these points.
+Decision on Number of Clusters (k)
+Based on both methods:
+
+k = 3 seems like a strong candidate since it balances variance explained and silhouette score.
+
+
+## K Means Clustering on PCA Data
+```{r}
+set.seed(123)  # For reproducibility
+
+# Perform K-Means clustering on first 4 PCA components
+kmeans_result <- kmeans(pca_result$ind$coord[, 1:4], centers = 3, nstart = 25)
+
+# Add cluster labels to data
+customer_clusters <- customer_totals_wide_nidal
+customer_clusters$cluster <- as.factor(kmeans_result$cluster)
+
+# Print cluster sizes
+table(customer_clusters$cluster)
+
+```
+
+```{r}
+cluster_summary <- customer_clusters %>%
+  group_by(cluster) %>%
+  summarise(
+    avg_orders = mean(total_orders, na.rm = TRUE),
+    avg_gallons = mean(total_gallons_ordered, na.rm = TRUE),
+    avg_delivery_cost = mean(total_delivery_cost, na.rm = TRUE),
+    avg_income = mean(MED_HH_INC, na.rm = TRUE),
+    avg_population = mean(TOT_POP, na.rm = TRUE)
+  )
+
+print(cluster_summary)
+
+```
+
+```{r}
+table(customer_clusters$cluster, customer_clusters$trade_channel)
+table(customer_clusters$cluster, customer_clusters$volume_bucket)
+table(customer_clusters$cluster, customer_clusters$state_short)
+
+```
+
+
+**Cluster Sizes (Step 3)**
+Cluster 1: 16,915 customers (majority).
+Cluster 2: 110 customers (very small group).
+Cluster 3: 12,472 customers (second largest).
+
+
+**Key Insights:**
+Cluster 2 has the highest volume customers (Avg. gallons: 34,299, Avg. delivery cost: $26,429), indicating high-value, large-scale buyers.
+Clusters 1 & 3 are similar in volume (464-466 gallons) but differ in income:
+Cluster 1: Lower-income, lower population density
+Cluster 3: Higher-income, more urban customers
+This suggests Cluster 1 might be small-volume buyers in lower-income areas, whereas Cluster 3 has small-volume buyers in wealthier areas.
+
+**Cluster Distributions by Trade Channel (Step 5)**
+Cluster 1 dominates in "Fast Casual Dining" (3,371 customers), "Comprehensive Dining" (2,745), and "Other Dining & Beverage" (1,567).
+Cluster 2 is almost absent from most trade channels, reinforcing that it's an elite, high-volume customer group.
+Cluster 3 has similar patterns to Cluster 1 but with fewer vehicle care and industrial customers.
+
+**Volume Buckets Across Clusters**
+Cluster	Small Buyers (<100 gal)	Medium Buyers (100-1000 gal)	Large Buyers (>1000 gal)
+Cluster 1 has the highest number of small-volume buyers.
+Cluster 2 consists entirely of large-scale buyers.
+Cluster 3 has a similar mix to Cluster 1, but slightly more medium and high-volume buyers.
+
+**Geographic Distribution**
+Cluster 1 is evenly distributed across states.
+Cluster 2 is very small, but customers are mostly from MA (55) and MD (13).
+Cluster 3 is heavily concentrated in MA (8,145) and MD (2,792).
+
+
+## Model Setup - Train/Test Split
+
+```{r}
+set.seed(123) # For reproducibility
+
+# Splitting the dataset
+train_index <- createDataPartition(customer_clusters$cluster, p = 0.7, list = FALSE)
+
+# Creating train and test datasets
+train_data <- customer_clusters[train_index, ]
+test_data <- customer_clusters[-train_index, ]
+
+```
+
+
+## Testing a random forest model
+```{r}
+library(randomForest)
+
+# Convert cluster column to a factor for classification
+train_data$cluster <- as.factor(train_data$cluster)
+test_data$cluster <- as.factor(test_data$cluster)
+
+# Train Random Forest
+rf_model <- randomForest(cluster ~ total_orders + total_gallons_ordered + total_delivery_cost + 
+                         avg_cost_per_order + MED_HH_INC + PER_CAP_INC + EMP_POP + TOT_POP, 
+                         data = train_data, ntree = 500, mtry = 3, importance = TRUE)
+
+# View model summary
+print(rf_model)
+
+```
+
+
+
+```{r}
+# Make predictions
+pred_rf <- predict(rf_model, test_data)
+
+# Confusion matrix
+conf_matrix <- table(Predicted = pred_rf, Actual = test_data$cluster)
+print(conf_matrix)
+
+# Calculate accuracy
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+print(paste("Random Forest Accuracy:", round(accuracy, 4)))
+
+```
+
+
+
+```{r}
+importance(rf_model) 
+varImpPlot(rf_model)
+
+```
+
+⃣Cluster Predictions
+Cluster 1: Most customers (majority class) → Very well classified
+Cluster 3: Also well-classified
+Cluster 2: Hardest to classify (19.5% error rate) → Needs improvement but its small amount so disregard
+
+
+What drives cluster classification?
+Feature	Importance
+EMP_POP (Employment Population)	is Most influential predictor
+PER_CAP_INC (Per Capita Income)	is 2nd most important
+MED_HH_INC (Median Household Income) is High impact
+TOT_POP (Total Population) is a significant factor
+Total Gallons Ordered & Total Delivery Cost
+Interpretation:
+
+Economic factors (income, employment, population size) play a huge role in customer classification.
+Order volume & cost also matter but are not the only deciding factors.
+Customers in higher-income & employment areas may behave differently in ordering patterns.
+
+What This Means for the Business
+Cluster 1 & 3 are predictable and well-segmented (no major concerns).
+Cluster 2 has classification issues
+Targeted strategies can be developed based on economic data:
+High-income areas = Premium customer strategies
+Lower-income areas = Alternative route-to-market strategies (ARTM) to optimize delivery costs
+
+
+
+
+## Create a Growth Score Formula
+
+Since we're focusing on Clusters 1 and 3, the goal is to rank customers based on growth potential using a scoring system that incorporates economic and order data.
+## Doii
+```{r}
+# Assign weights (adjustable based on business insights)
+weights <- list(
+  yoy_total_orders = 0.20,     # 20% weight - how much their total orders are growing
+  yoy_total_gallons_ordered = 0.20, # 20% weight - how much their volume is growing
+  total_gallons_ordered = 0.15, # 15% weight - total gallons ordered
+  total_orders = 0.10,         # 10% weight - how frequently they order
+  MED_HH_INC = 0.10,           # 10% weight - local median household income
+  PER_CAP_INC = 0.10,          # 10% weight - local per capita income
+  EMP_POP = 0.10,              # 10% weight - employment population
+  TOT_POP = 0.05               # 5% weight - total population
+)
+
+# Normalize each factor using min-max scaling (to bring values to a comparable scale)
+customer_clusters <- customer_clusters %>%
+  mutate(
+    yoy_total_orders_scaled = (yoy_total_orders - min(yoy_total_orders, na.rm = TRUE)) / 
+                              (max(yoy_total_orders, na.rm = TRUE) - min(yoy_total_orders, na.rm = TRUE)),
+    yoy_total_gallons_ordered_scaled = (yoy_total_gallons_ordered - min(yoy_total_gallons_ordered, na.rm = TRUE)) / 
+                                        (max(yoy_total_gallons_ordered, na.rm = TRUE) - min(yoy_total_gallons_ordered, na.rm = TRUE)),
+    total_gallons_ordered_scaled = (total_gallons_ordered - min(total_gallons_ordered, na.rm = TRUE)) / 
+                                   (max(total_gallons_ordered, na.rm = TRUE) - min(total_gallons_ordered, na.rm = TRUE)),
+    total_orders_scaled = (total_orders - min(total_orders, na.rm = TRUE)) / 
+                          (max(total_orders, na.rm = TRUE) - min(total_orders, na.rm = TRUE)),
+    MED_HH_INC_scaled = (MED_HH_INC - min(MED_HH_INC, na.rm = TRUE)) / 
+                        (max(MED_HH_INC, na.rm = TRUE) - min(MED_HH_INC, na.rm = TRUE)),
+    PER_CAP_INC_scaled = (PER_CAP_INC - min(PER_CAP_INC, na.rm = TRUE)) / 
+                         (max(PER_CAP_INC, na.rm = TRUE) - min(PER_CAP_INC, na.rm = TRUE)),
+    EMP_POP_scaled = (EMP_POP - min(EMP_POP, na.rm = TRUE)) / 
+                     (max(EMP_POP, na.rm = TRUE) - min(EMP_POP, na.rm = TRUE)),
+    TOT_POP_scaled = (TOT_POP - min(TOT_POP, na.rm = TRUE)) / 
+                     (max(TOT_POP, na.rm = TRUE) - min(TOT_POP, na.rm = TRUE))
+  )
+
+# Compute the Growth Potential Score (GPS)
+customer_clusters <- customer_clusters %>%
+  mutate(Growth_Potential_Score = 
+           (yoy_total_orders_scaled * weights$yoy_total_orders) +
+           (yoy_total_gallons_ordered_scaled * weights$yoy_total_gallons_ordered) +
+           (total_gallons_ordered_scaled * weights$total_gallons_ordered) +
+           (total_orders_scaled * weights$total_orders) +
+           (MED_HH_INC_scaled * weights$MED_HH_INC) +
+           (PER_CAP_INC_scaled * weights$PER_CAP_INC) +
+           (EMP_POP_scaled * weights$EMP_POP) +
+           (TOT_POP_scaled * weights$TOT_POP))
+
+# Rank customers based on Growth Potential Score
+customer_clusters <- customer_clusters %>%
+  arrange(desc(Growth_Potential_Score)) %>%
+  mutate(Growth_Rank = row_number())
+
+# View top 10 high-growth customers
+
+head(customer_clusters[, c("customer_number", "Growth_Potential_Score", "Growth_Rank", "cluster")], 10)
+
+```
+
+What This Means:
+Customers are ranked by Growth_Potential_Score, with higher scores indicating greater potential for volume growth.
+The Growth_Rank orders them accordingly, with Rank 1 being the highest potential customer.
+Cluster 1 and 3 are the only clusters being considered, as planned.
+The highest-ranking customers are primarily from Cluster 1, but some from Cluster 3 also show high growth potential.
+
