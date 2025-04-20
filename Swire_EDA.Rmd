@@ -1,0 +1,491 @@
+---
+title: "Swire Capstone EDA"
+author: "Nidal Arain"
+date: "2025-02-03"
+output: 
+  html_document: 
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## loading data
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(readxl)
+
+transactional_data <- read.csv("transactional_data.csv")
+customer_profile_data <- read.csv("customer_profile.csv")
+customer_address_zip_mapping_data <- read.csv("customer_address_and_zip_mapping.csv")
+delivery_cost_data <- read_excel("delivery_cost_data.xlsx")
+```
+
+## Transactional Data EDA
+
+```{r}
+# Convert Date Format
+transactional_data <- transactional_data %>%
+  mutate(TRANSACTION_DATE = as.Date(TRANSACTION_DATE, format = "%m/%d/%Y"))
+
+# Overview of the dataset structure
+str(transactional_data)
+# Get summary statistics for each column
+summary(transactional_data)
+
+```
+
+
+# Find High-Growth Potential Customers
+identify customers who are just below the threshold (e.g., 300–399 gallons) and see if they are growing.
+
+These customers might benefit from active sales support to push them over 400 gallons.
+
+```{r}
+growth_potential <- customer_volume %>%
+  filter(total_gallons >= 300 & total_gallons < 400) %>%
+  arrange(desc(total_gallons))
+
+print(growth_potential)
+
+```
+
+
+# Investigate Order Type & Growth
+
+```{r}
+order_type_growth <- transactional_data %>%
+  group_by(ORDER_TYPE) %>%
+  summarise(
+    total_cases = sum(ORDERED_CASES, na.rm = TRUE),
+    total_gallons = sum(ORDERED_GALLONS, na.rm = TRUE),
+    total_volume = total_cases + total_gallons
+  ) %>%
+  arrange(desc(total_volume))
+
+print(order_type_growth)
+
+
+```
+
+# Delivery Efficiency by Customer Group
+```{r}
+fulfillment_by_customer <- transactional_data %>%
+  group_by(CUSTOMER_NUMBER) %>%
+  summarise(
+    total_loaded = sum(LOADED_CASES, na.rm = TRUE),
+    total_delivered = sum(DELIVERED_CASES, na.rm = TRUE),
+    fulfillment_rate = total_delivered / total_loaded
+  ) %>%
+  arrange(fulfillment_rate)
+
+print(head(fulfillment_by_customer, 10))  # Check customers with lowest fulfillment
+
+```
+
+# Examine Numeric Distributions & Outliers
+```{r}
+negative_delivered <- transactional_data %>%
+  filter(DELIVERED_CASES < 0 | DELIVERED_GALLONS < 0)
+
+summary(negative_delivered)
+```
+
+The summary shows that there are a number of transactions with negative values for delivered cases and gallons. Here are some observations and follow-up questions:
+
+Negative Delivered Values:
+DELIVERED_CASES:
+Min: -3132, 1st Quartile: -12, Median: -1, Mean: -35.3, Max: 1056
+DELIVERED_GALLONS:
+Min: -1792.5, 1st Quartile: -5, Median: 0, Mean: -6.725, Max: 387.5
+Interpretation:
+
+These negatives could be because of returns, adjustments, or corrections. The relatively low median (e.g., -1 for cases, 0 for gallons) suggests that many of these adjustments might be small, but there are some substantial negative outliers.
+
+
+Next Steps/ Questions 
+Do we have any business context on these negative values? Do they represent product returns, cancellations, or error corrections?
+
+
+```{r}
+negative_delivered %>%
+  group_by(ORDER_TYPE) %>%
+  summarise(count = n(), mean_delivered_cases = mean(DELIVERED_CASES, na.rm = TRUE))
+
+```
+
+
+# Distribution by Order Type
+```{r}
+transactional_data %>%
+  group_by(ORDER_TYPE) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+
+```
+
+# Investigate Order Type Trends Over Time
+```{r}
+library(ggplot2)
+
+order_type_trend <- transactional_data %>%
+  group_by(YEAR, WEEK, ORDER_TYPE) %>%
+  summarise(total_cases_ordered = sum(ORDERED_CASES, na.rm = TRUE),
+            total_cases_delivered = sum(DELIVERED_CASES, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(order_type_trend, aes(x = WEEK, y = total_cases_ordered, color = ORDER_TYPE)) +
+  geom_line() +
+  facet_wrap(~YEAR) +
+  labs(title = "Weekly Ordered Cases by Order Type",
+       x = "Week",
+       y = "Total Ordered Cases",
+       color = "Order Type")
+
+```
+Observations from the Weekly Ordered Cases by Order Type Chart
+
+MYCOKE LEGACY Declining in 2024
+In 2023, MYCOKE LEGACY (green line) had the highest number of ordered cases, peaking above 90,000 weekly.
+In 2024, MYCOKE LEGACY orders decline sharply around week 30 and seem to be phased out.
+This aligns with the business transition to MYCOKE360 (new digital platform).
+MYCOKE360 Increasing in 2024
+
+MYCOKE360 (cyan/blue-green line) shows an increasing trend in 2024.
+There's a major spike around week 30, likely when many customers transitioned from MYCOKE LEGACY to MYCOKE360.
+SALES REP Orders Are Stable but Show Slight Decline
+
+SALES REP (pink line) remains relatively stable over both years, although it seems to decline slightly towards the end of 2024.
+This could suggest that more customers are shifting to digital ordering methods (MYCOKE360, EDI, or CALL CENTER).
+CALL CENTER & EDI Orders Are Consistent
+
+CALL CENTER (red line) maintains a steady trend across both years.
+EDI (brown/yellow line) fluctuates but remains fairly stable.
+Null and OTHER Categories Need Investigation
+
+The null category (purple line) is surprisingly large.
+This needs further investigation:
+Is this an issue with missing order types?
+Are these manual adjustments, corrections, or unclassified orders?
+
+
+## Customer Profile Data
+
+```{r}
+
+# Overview of dataset
+str(customer_profile_data)
+
+# Summary statistics
+summary(customer_profile_data)
+
+# Check for missing values
+colSums(is.na(customer_profile_data))
+
+```
+```{r}
+#converting to date type
+customer_profile_data <- customer_profile_data %>%
+  mutate(
+    FIRST_DELIVERY_DATE = as.Date(FIRST_DELIVERY_DATE, format = "%m/%d/%Y"),
+    ON_BOARDING_DATE = as.Date(ON_BOARDING_DATE, format = "%m/%d/%Y")
+  )
+
+```
+
+
+
+#Compare Local Market Partners vs. All Customers
+
+```{r}
+local_vs_all <- customer_profile_data %>%
+  group_by(LOCAL_MARKET_PARTNER) %>%
+  summarise(
+    num_customers = n(),
+    avg_ordered_gallons = mean(transactional_data$ORDERED_GALLONS, na.rm = TRUE),
+    avg_total_volume = mean(transactional_data$ORDERED_CASES + transactional_data$ORDERED_GALLONS, na.rm = TRUE)
+  )
+
+print(local_vs_all)
+
+```
+
+#Identify Customer Attributes Correlated with High-Volume Orders
+```{r}
+high_volume_customers <- transactional_data %>%
+  group_by(CUSTOMER_NUMBER) %>%
+  summarise(total_cases = sum(ORDERED_CASES, na.rm = TRUE),
+            total_gallons = sum(ORDERED_GALLONS, na.rm = TRUE),
+            total_volume = total_cases + total_gallons) %>%
+  left_join(customer_profile_data, by = "CUSTOMER_NUMBER") %>%
+  mutate(high_volume = ifelse(total_gallons >= 400, "Above 400 Gallons", "Below 400 Gallons"))
+
+# Compare characteristics of high-volume vs. low-volume customers
+high_volume_summary <- high_volume_customers %>%
+  group_by(high_volume, LOCAL_MARKET_PARTNER, FREQUENT_ORDER_TYPE, TRADE_CHANNEL) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+print(high_volume_summary)
+
+```
+
+# Identify Local Market Partners Near the 400-Gallon Threshold
+```{r}
+lmp_growth_potential <- high_volume_customers %>%
+  filter(LOCAL_MARKET_PARTNER == TRUE & total_gallons >= 300 & total_gallons < 400) %>%
+  arrange(desc(total_gallons))
+
+print(lmp_growth_potential)
+
+```
+
+
+
+
+
+
+
+#Investigate Trade Channel & Sub-Trade Channel Impact
+```{r}
+trade_channel_summary <- customer_profile_data %>%
+  group_by(TRADE_CHANNEL) %>%
+  summarise(num_customers = n()) %>%
+  arrange(desc(num_customers))
+
+print(trade_channel_summary)
+
+ggplot(trade_channel_summary, aes(x = reorder(TRADE_CHANNEL, num_customers), y = num_customers)) +
+  geom_bar(stat = "identity", fill = "lightgreen") +
+  coord_flip() +
+  labs(title = "Distribution of Trade Channels",
+       x = "Trade Channel",
+       y = "Number of Customers")
+
+```
+1️⃣ Most Customers Belong to the Top 5 Trade Channels
+FAST CASUAL DINING (6,016 customers) and COMPREHENSIVE DINING (4,765 customers) dominate the dataset.
+GENERAL RETAILER (2,846) and OTHER DINING & BEVERAGE (2,797) are also significant.
+OUTDOOR ACTIVITIES (2,194) is surprisingly high, suggesting seasonal or location-based demand.
+Implication:
+
+The majority of customers are in the food & beverage sector.
+Fast Casual & Comprehensive Dining likely have different order patterns than Retailers or Recreation businesses.
+Do high-volume customers belong to certain trade channels? → We should check.
+2️⃣ Smallest Categories May Be Outliers
+INDUSTRIAL, DEFENSE, TRAVEL, BULK TRADE, SUPERSTORE, and PHARMACY RETAILER have fewer than 200 customers each.
+LARGE-SCALE RETAILER has only 1 customer.
+Implication:
+
+These sectors may not be relevant for ARTM strategy.
+Should we remove them from modeling or treat them separately?
+```{r}
+trade_channel_volume <- transactional_data %>%
+  left_join(customer_profile_data, by = "CUSTOMER_NUMBER") %>%
+  group_by(TRADE_CHANNEL) %>%
+  summarise(
+    avg_total_volume = mean(ORDERED_CASES + ORDERED_GALLONS, na.rm = TRUE),
+    num_customers = n()
+  ) %>%
+  arrange(desc(avg_total_volume))
+
+print(trade_channel_volume)
+
+```
+
+
+
+
+
+
+
+## Customer Address & ZIP Mapping
+Key EDA Goals for ZIP Mapping
+1️⃣ Identify Geographic Trends in High-Volume vs. Low-Volume Customers
+
+Are certain regions more likely to exceed the 400-gallon threshold?
+Can we spot clusters of high-growth potential customers?
+2️⃣ Analyze Local Market Partner Distribution by Region
+
+Are LMPs concentrated in specific areas?
+Could regional differences impact ARTM transition decisions?
+3️⃣ Compare Delivery Efficiency by ZIP Code
+
+Are some ZIP codes experiencing more fulfillment issues (low delivered-to-ordered ratio)?
+Could logistics challenges make some areas better candidates for ARTM?
+
+
+```{r}
+# Overview of dataset
+str(customer_address_zip_mapping_data)
+
+# Summary statistics
+summary(customer_address_zip_mapping_data)
+
+# Check for missing values
+colSums(is.na(customer_address_zip_mapping_data))
+
+```
+
+# Identify High-Volume vs. Low-Volume ZIP Codes
+These low-volume ZIPs may be better candidates for ARTM since direct truck deliveries might not be cost-effective.
+```{r}
+# Rename 'zip' column in customer_address_zip_mapping_data to match the other datasets
+customer_address_zip_mapping_data <- customer_address_zip_mapping_data %>%
+  rename(ZIP_CODE = zip)
+
+# Perform the join and fix grouping issue
+zip_volume_analysis <- transactional_data %>%
+  left_join(customer_profile_data, by = "CUSTOMER_NUMBER") %>%
+  left_join(customer_address_zip_mapping_data, by = "ZIP_CODE") %>%
+  group_by(ZIP_CODE) %>%  # Fix grouping function
+  summarise(
+    total_customers = n(),
+    avg_total_gallons = mean(ORDERED_GALLONS, na.rm = TRUE),
+    high_volume_customers = sum(ORDERED_GALLONS >= 400, na.rm = TRUE)
+  ) %>%
+  arrange(desc(high_volume_customers))
+
+print(zip_volume_analysis)
+
+# Visualize top ZIP codes with high-volume customers
+ggplot(zip_volume_analysis %>% filter(high_volume_customers > 0), 
+       aes(x = reorder(ZIP_CODE, high_volume_customers), y = high_volume_customers)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  coord_flip() +
+  labs(title = "Top ZIP Codes by High-Volume Customers (400+ Gallons)",
+       x = "ZIP Code",
+       y = "Number of High-Volume Customers")
+
+
+```
+
+
+
+
+#Analyze LMP Distribution by ZIP
+```{r}
+lmp_zip_distribution <- customer_profile_data %>%
+  filter(LOCAL_MARKET_PARTNER == TRUE) %>%
+  left_join(customer_address_zip_mapping_data, by = "ZIP_CODE") %>%
+  group_by(ZIP_CODE) %>%
+  summarise(lmp_count = n()) %>%
+  arrange(desc(lmp_count))
+
+print(lmp_zip_distribution)
+```
+
+
+#Compare LMP-Heavy ZIPs with High-Volume ZIPs
+ZIPs with both high LMP density & low high-volume customers should likely be moved to ARTM to reduce delivery costs.
+
+ZIPs with high high-volume customer density should likely stay on direct delivery (red trucks) to retain and grow these accounts.
+
+ZIPs in between (moderate LMP density and moderate high-volume customers) may need a hybrid approach (case-by-case evaluation).
+```{r}
+# Merge the two datasets to compare LMP-heavy and high-volume ZIPs
+zip_comparison <- lmp_zip_distribution %>%
+  full_join(zip_volume_analysis, by = "ZIP_CODE") %>%
+  replace_na(list(lmp_count = 0, high_volume_customers = 0)) %>%  # Fill NAs with 0
+  mutate(lmp_density = lmp_count / total_customers,  # % of customers that are LMPs
+         high_volume_density = high_volume_customers / total_customers) %>%
+  arrange(desc(lmp_density))
+
+print(zip_comparison)
+
+# Visualize LMP-heavy vs. High-Volume ZIPs
+ggplot(zip_comparison, aes(x = lmp_density, y = high_volume_density, label = ZIP_CODE)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_text(size = 3, vjust = 1.5, check_overlap = TRUE) +
+  labs(title = "LMP Density vs. High-Volume Customer Density by ZIP",
+       x = "Percentage of Customers That Are LMPs",
+       y = "Percentage of Customers That Are High-Volume (400+ Gallons)") +
+  theme_minimal()
+
+```
+
+
+
+## Delivery Cost Data
+Cost Structure Breakdown
+
+Median delivery cost ranges from $0.37 to $8.58 per unit.
+The highest median delivery cost is $8.06 per case (likely for low-volume customers).
+The costs decrease as volume increases, which aligns with economies of scale.
+```{r}
+# Overview of dataset
+str(delivery_cost_data)
+
+# Summary statistics
+summary(delivery_cost_data)
+
+# Check for missing values
+colSums(is.na(delivery_cost_data))
+
+```
+
+
+#Analyze Cost Per Unit by Product Category
+
+1️⃣ Bottles and Cans Are More Expensive to Deliver
+
+Median Cost: $3.13 per case
+Average Cost: $3.51 per case
+Max Cost: $8.58 per case → Very high for low-volume deliveries.
+2️⃣ Fountain Drinks Have Lower Delivery Costs
+
+Median Cost: $1.47 per gallon
+Average Cost: $1.68 per gallon
+Max Cost: $4.62 per gallon → Still lower than Bottles and Cans.
+
+
+🚀 Key Insights for ARTM Strategy
+Low-volume Bottles and Cans deliveries are very expensive (up to $8.58 per case).
+Customers below 400 gallons, especially those ordering Bottles and Cans, are strong ARTM candidates.
+
+Fountain drink customers generally have lower costs.
+They might justify staying on direct delivery if their volume is high enough.
+SCCU can prioritize ARTM for customers ordering Bottles & Cans in small volumes.
+
+
+```{r}
+# Standardize column names by replacing spaces with underscores
+colnames(delivery_cost_data) <- gsub(" ", "_", colnames(delivery_cost_data))
+
+# Verify that column names are now correct
+colnames(delivery_cost_data)
+cost_by_category <- delivery_cost_data %>%
+  group_by(Applicable_To) %>%
+  summarise(
+    median_cost = median(Median_Delivery_Cost, na.rm = TRUE),
+    avg_cost = mean(Median_Delivery_Cost, na.rm = TRUE),
+    min_cost = min(Median_Delivery_Cost, na.rm = TRUE),
+    max_cost = max(Median_Delivery_Cost, na.rm = TRUE)
+  )
+
+print(cost_by_category)
+
+# Visualizing the cost distribution by product type
+ggplot(cost_by_category, aes(x = Applicable_To, y = avg_cost, fill = Applicable_To)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Delivery Cost by Product Category",
+       x = "Product Category",
+       y = "Average Delivery Cost") +
+  theme_minimal()
+
+```
+
+
+
+
+
+# Identify High-Cost Customer Segments
+
+```{r}
+
+```
+
